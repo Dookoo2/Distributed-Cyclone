@@ -155,7 +155,8 @@ To get started with Cyclone, clone the repository and follow the installation in
 ```bash
 ## AVX2 ##
 git clone https://github.com/Dookoo2/Distributed-Cyclone.git
-cd Distributed_Cyclone_avx2
+cd Distributed-Cyclone/Client/Dist_Cyclone_avx2/
+
 g++ -std=c++17 -Ofast -ffast-math -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -fipa-modref -flto -fassociative-math -fopenmp -mavx2 -mbmi2 -madx -o Dist_Cyclone Dist_Cyclone.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp Point.cpp ripemd160_avx2.cpp p2pkh_decoder.cpp sha256_avx2.cpp
 ```
 
