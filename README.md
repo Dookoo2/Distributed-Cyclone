@@ -35,7 +35,8 @@ All these functionalities have been implemented in Distributed Cyclone.
 
 ## 💎 Architecture
 - **Server Component:**  
-  Written in Python for ease of development, as ultimate speed is not critical.  
+  Written in Python for ease of development, as ultimate speed is not critical.
+  **Hardware requirements:** 1 vCPU, 2Gb RAM, 40 GB SSD, Inet access. 
   **Note:** The server has been tested exclusively on Ubuntu 24.04. Please use this OS or modify the server script to integrate with UFW if necessary.
 
 - **Client Component:**  
