@@ -1,4 +1,3 @@
-# Server side of Distributed Cyclone software. Tested on Ubuntu 24.04.
 #!/usr/bin/env python3
 import socket
 import threading
@@ -33,9 +32,6 @@ computing_ranges = 0
 found_key = None
 is_first_status_print = True
 
-################################################################################
-# Optional blocking/unblocking in ufw for unknown requests
-################################################################################
 def block_ip_for_8_hours(ip: str):
     try:
         subprocess.run(["sudo", "ufw", "deny", "from", ip], check=True, stderr=subprocess.DEVNULL)
@@ -238,7 +234,6 @@ def handle_client(client_sock: socket.socket, client_addr):
                     log_event(f"[!] Error reading from {client_addr}: {e}")
 
                 if not chunk:
-                    # Client disconnected
                     break
 
                 data_buffer += chunk
@@ -250,10 +245,61 @@ def handle_client(client_sock: socket.socket, client_addr):
                     if not req:
                         continue
 
-                    log_event(f"[>] Received from {client_addr}: {req}")
-
                     if req == "ALIVE":
                         last_alive = datetime.datetime.now()
+                        continue
+
+                    if req == TARGET_KEYWORD:
+                        with local_db_conn:
+                            c = local_db_conn.cursor()
+                            c.execute("SELECT address FROM ranges LIMIT 1")
+                            r = c.fetchone()
+                            tgt = r[0] if r else "NO TARGET"
+                            c.close()
+                        try:
+                            client_sock.sendall((tgt + "\n").encode('utf-8'))
+                        except Exception as e:
+                            log_event(f"[!] Error sending target address: {e}")
+                        log_event(f"[<] Sent (target): {tgt}")
+                        continue
+
+                    if req == REQUEST_KEYWORD:
+                        with local_db_conn:
+                            c = local_db_conn.cursor()
+                            c.execute("SELECT start, end FROM ranges WHERE status='pending' ORDER BY RANDOM() LIMIT 1")
+                            row = c.fetchone()
+                            if row:
+                                seg_start, seg_end = row
+                                c.execute("UPDATE ranges SET status='computing' WHERE start=? AND end=?",
+                                          (seg_start, seg_end))
+                                current_segment = {"start": seg_start, "end": seg_end}
+                                with stats_lock:
+                                    computing_ranges += 1
+                            else:
+                                current_segment = None
+                            c.close()
+
+                        if current_segment:
+                            try:
+                                msg = f"{current_segment['start']}:{current_segment['end']}\n"
+                                client_sock.sendall(msg.encode('utf-8'))
+                                log_event(f"[<] Issued {msg.strip()} to {client_addr}")
+                                print_status()
+                            except Exception as e:
+                                log_event(f"[!] Error sending range: {e}")
+                                with local_db_conn:
+                                    c = local_db_conn.cursor()
+                                    c.execute("UPDATE ranges SET status='pending' WHERE start=? AND end=?",
+                                              (current_segment['start'], current_segment['end']))
+                                    c.close()
+                                with stats_lock:
+                                    computing_ranges -= 1
+                                current_segment = None
+                        else:
+                            try:
+                                client_sock.sendall("NO RANGE\n".encode('utf-8'))
+                            except Exception as e:
+                                log_event(f"[!] Error sending NO RANGE: {e}")
                         continue
 
                     if req.endswith(NOT_COMPUTED_MARKER):
@@ -278,22 +324,7 @@ def handle_client(client_sock: socket.socket, client_addr):
                         print_status()
                         continue
 
-                    if req == TARGET_KEYWORD:
-                        with local_db_conn:
-                            c = local_db_conn.cursor()
-                            c.execute("SELECT address FROM ranges LIMIT 1")
-                            r = c.fetchone()
-                            tgt = r[0] if r else "NO TARGET"
-                            c.close()
-                        try:
-                            client_sock.sendall((tgt + "\n").encode('utf-8'))
-                        except Exception as e:
-                            log_event(f"[!] Error sending target address: {e}")
-                        log_event(f"[<] Sent (target): {tgt}")
-                        continue
-
                     if FOUND_MARKER in req:
-                        # No server response is sent here after FOUND
                         parts = req.split(FOUND_MARKER)
                         if len(parts) >= 2:
                             key = parts[1].strip()
@@ -338,50 +369,9 @@ def handle_client(client_sock: socket.socket, client_addr):
                         print_status()
                         continue
 
-                    if req == REQUEST_KEYWORD:
-                        with local_db_conn:
-                            c = local_db_conn.cursor()
-                            c.execute("SELECT start, end FROM ranges WHERE status='pending' ORDER BY RANDOM() LIMIT 1")
-                            row = c.fetchone()
-                            if row:
-                                seg_start, seg_end = row
-                                c.execute("UPDATE ranges SET status='computing' WHERE start=? AND end=?",
-                                          (seg_start, seg_end))
-                                current_segment = {"start": seg_start, "end": seg_end}
-                                with stats_lock:
-                                    computing_ranges += 1
-                            else:
-                                current_segment = None
-                            c.close()
+                    block_ip_for_8_hours(client_addr[0])
+                    return
 
-                        if current_segment:
-                            try:
-                                msg = f"{current_segment['start']}:{current_segment['end']}\n"
-                                client_sock.sendall(msg.encode('utf-8'))
-                                log_event(f"[<] Issued {msg.strip()} to {client_addr}")
-                                print_status()
-                            except Exception as e:
-                                log_event(f"[!] Error sending range: {e}")
-                                with local_db_conn:
-                                    c = local_db_conn.cursor()
-                                    c.execute("UPDATE ranges SET status='pending' WHERE start=? AND end=?",
-                                              (current_segment['start'], current_segment['end']))
-                                    c.close()
-                                with stats_lock:
-                                    computing_ranges -= 1
-                                current_segment = None
-                        else:
-                            try:
-                                client_sock.sendall("NO RANGE\n".encode('utf-8'))
-                            except Exception as e:
-                                log_event(f"[!] Error sending NO RANGE: {e}")
-                        continue
-
-                    # Unknown request -> for example, block or just log
-                    else:
-                        log_event(f"[!] Unknown request from {client_addr}: {req}")
-                        # block_ip_for_8_hours(client_addr[0])  # if you want to block
-                        continue
             else:
                 now = datetime.datetime.now()
                 if (now - last_alive).total_seconds() > 480*60:
