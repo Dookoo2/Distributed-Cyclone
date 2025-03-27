@@ -124,7 +124,12 @@ Found key  : 0000000000000000000000000000000000000000000000000000000006AC3875
 
 **Server log.txt**
 ```bash
-Log in DB.
+Log in DB!
+Use sqlitebrowser for DB navigating!
+Installing:
+apt install sqlitebrowser
+sqlitebrowser
+And that's all!
 
 ```
 **Server blocking.txt**
