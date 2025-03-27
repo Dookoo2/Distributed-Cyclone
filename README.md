@@ -83,41 +83,43 @@ Below is an example of Cyclone in action, solving a Satoshi puzzle:
 
 **Client Side**
 ```bash
-root@DESKTOP-BD9V01U:/mnt/e/VM# ./Dist_Cyclone -i 91.84.105.101 -p 12345
+root@ubuntu:/home/ubuntu/Distributed Cyclone/CLIENT_avx2# ./Dist_Cyclone -i 0.0.0.0 -p 12345
 ================= SRV COMMUNICATION =================
-SRV ip-address       : 91.84.105.101
+SRV ip-address       : 0.0.0.0
 SRV port             : 12345
 Connection status    : Established
 ================= WORK IN PROGRESS ==================
-Target Address: 1KYUv7nSvXx4642TKeuC2SNdTk326uUpFy
-CPU Threads   : 16
-Mkeys/s       : 0.02
-Total Checked : 1287568
-Elapsed Time  : 00:00:56
-Progress      : 0.00 %
-Total ranges  : 59
+Target Address: 128z5d7nN7PkCuX5qoA4Ys6pmxUYnEy86k
+CPU Threads   : 8
+Mkeys/s       : 8.943
+Total Checked : 119586937
+Elapsed Time  : 00:00:13
+Progress      : 0.00 %%
+Total ranges  : 6
 =================== FOUND MATCH! ====================
      The key was found and sent to the server!
+
 ```
 
 **Server side**
 ```bash
-root@v310427:/home/btc# python3 srv.py
-Database 'database.db' already exists. Use it (Y) or create new (N)? [Y/N]: N
-Enter start of range (HEX): 236FB600000000
-Enter end of range (HEX): 236FB6FFFFFFFF
-Enter number of segments (DEC): 100
-Enter target P2PKH address: 1KYUv7nSvXx4642TKeuC2SNdTk326uUpFy
-Rules updated
-Rules updated (v6)
-Port was opened
-======Cyclone server status======
-Clients  : 0
-Computed : 59
-Computing: 0
-Remain   : 41
-Found key: 00000000000000000000000000000000000000000000000000236FB6D5AD1F43
-=================================
+root@ubuntu:/home/ubuntu/Distributed Cyclone/SRV# python3 srv.py 
+Database 'database.db' exists. Use it? [Y/N]: N
+======= Creating Cyclone database =======
+Creating new database 'database.db'
+Enter range start hex: 0
+Enter range end hex: 6facFFFF
+Enter segments count: 10
+Enter target address: 128z5d7nN7PkCuX5qoA4Ys6pmxUYnEy86k
+========= Cyclone server status =========
+Clients    : 0
+Computed   : 6
+Computing  : 0
+Remain     : 4
+Blocked IP : 1
+Found key  : 0000000000000000000000000000000000000000000000000000000006AC3875
+=========================================
+
 ```
 
 **Server log.txt**
