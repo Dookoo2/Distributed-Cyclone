@@ -43,6 +43,15 @@ def block_log(msg):
     with open(BLOCK_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{t}] {msg}\n")
 
+async def db_log(event):
+    try:
+        async with db_lock:
+            await db.execute("INSERT INTO log (event_time, event) VALUES(?, ?)", (datetime.datetime.now(), event))
+            await db.commit()
+    except Exception as e:
+        # Если логирование в БД не удалось, пишем в файл
+        log_event(f"DB log error: {e}")
+
 async def block_ip_for_8h(ip):
     try:
         await asyncio.to_thread(subprocess.run, ["sudo", "ufw", "deny", "from", ip],
@@ -120,12 +129,12 @@ async def print_status():
     blk = await get_blocked()
     lines = [
         "========= Cyclone server status =========",
-        f"Clients    : {connected_clients}",
-        f"Computed   : {computed_ranges}",
-        f"Computing  : {computing_ranges}",
-        f"Remain     : {rem}",
-        f"Blocked IP : {blk}",
-        f"Found key  : {found_key if found_key else 'None'}",
+        f"Clients  : {connected_clients}",
+        f"Computed : {computed_ranges}",
+        f"Computing: {computing_ranges}",
+        f"Remain   : {rem}",
+        f"Blocked  : {blk}",
+        f"Found key: {found_key if found_key else 'None'}",
         "========================================="
     ]
     async with console_lock:
@@ -143,6 +152,7 @@ async def print_status():
 async def handle_client(reader, writer):
     global connected_clients, computed_ranges, computing_ranges, found_key
     addr = writer.transport.get_extra_info("peername")
+    await db_log(f"Client connected: {addr}")
     async with stats_lock:
         connected_clients += 1
     await print_status()
@@ -156,6 +166,7 @@ async def handle_client(reader, writer):
                 now = datetime.datetime.now()
                 if (now - last_alive).total_seconds() > (480 * 60):
                     log_event(f"[!] {addr} no ALIVE>8h")
+                    await db_log(f"Client {addr} timeout (no ALIVE)")
                     break
                 continue
             if not line:
@@ -163,6 +174,8 @@ async def handle_client(reader, writer):
             req = line.decode("utf-8", errors="ignore").strip()
             if not req:
                 continue
+            if req != "ALIVE":
+                await db_log(f"From {addr}: {req}")
             if req == "ALIVE":
                 last_alive = datetime.datetime.now()
                 continue
@@ -281,6 +294,7 @@ async def handle_client(reader, writer):
                 computing_ranges -= 1
         async with stats_lock:
             connected_clients -= 1
+        await db_log(f"Client disconnected: {addr}")
         await print_status()
 
 def sig_handler(*_):
@@ -324,6 +338,7 @@ async def init_db():
     await db.execute("CREATE TABLE IF NOT EXISTS ranges(id INTEGER PRIMARY KEY, start TEXT, end TEXT, address TEXT, status TEXT)")
     await db.execute("CREATE TABLE IF NOT EXISTS blocked(id INTEGER PRIMARY KEY, ip TEXT, blocked_time TIMESTAMP)")
     await db.execute("CREATE TABLE IF NOT EXISTS found(id INTEGER PRIMARY KEY, found_key TEXT, found_time TIMESTAMP)")
+    await db.execute("CREATE TABLE IF NOT EXISTS log(id INTEGER PRIMARY KEY, event_time TIMESTAMP, event TEXT)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_st ON ranges(status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_se ON ranges(start, end)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_addr ON ranges(address)")
@@ -338,7 +353,6 @@ async def init_db():
         await db.commit()
         computed_ranges = 0
         computing_ranges = 0
-        print(f"======= Creating Cyclone database =======")
         s = input("Enter start hex: ").strip()
         e = input("Enter end hex: ").strip()
         if s.lower().startswith("0x"):
@@ -382,10 +396,12 @@ async def init_db():
         await db.executemany("INSERT INTO ranges(start, end, address, status) VALUES(?,?,?,?)", records)
         await db.commit()
         log_event(f"New DB {s}-{e} segs={segs} target={t}")
+        await db_log(f"New DB created: {s}-{e} segs={segs} target={t}")
     else:
         await db.execute("UPDATE ranges SET status='pending' WHERE status='computing'")
         await db.commit()
         log_event("Existing DB reused, computing->pending")
+        await db_log("Existing DB reused, computing->pending")
         c = await db.execute("SELECT COUNT(*) FROM ranges WHERE status='done'")
         row = await c.fetchone()
         computed_ranges = row[0] if row else 0
