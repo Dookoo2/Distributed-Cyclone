@@ -120,12 +120,12 @@ async def print_status():
     blk = await get_blocked()
     lines = [
         "========= Cyclone server status =========",
-        f"Clients  : {connected_clients}",
-        f"Computed : {computed_ranges}",
-        f"Computing: {computing_ranges}",
-        f"Remain   : {rem}",
-        f"Blocked  : {blk}",
-        f"Found key: {found_key if found_key else 'None'}",
+        f"Clients    : {connected_clients}",
+        f"Computed   : {computed_ranges}",
+        f"Computing  : {computing_ranges}",
+        f"Remain     : {rem}",
+        f"Blocked IP : {blk}",
+        f"Found key  : {found_key if found_key else 'None'}",
         "========================================="
     ]
     async with console_lock:
