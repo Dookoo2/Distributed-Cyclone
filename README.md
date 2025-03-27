@@ -148,4 +148,3 @@ g++ -std=c++17 -Ofast -ffast-math -funroll-loops -ftree-vectorize -fstrict-alias
 ## ✌️**TIPS**
 BTC: bc1qtq4y9l9ajeyxq05ynq09z8p52xdmk4hqky9c8n
 
-Or connect to my server and let it run for a couple of days: **./Dist_Cyclone -i 91.84.105.101 -p 12345**
