@@ -1,4 +1,6 @@
-// g++ -std=c++17 -Ofast -ffast-math -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -fipa-modref -flto -fassociative-math -fopenmp -mavx2 -mbmi2 -madx -o Dist_Cyclone Dist_Cyclone.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp Point.cpp ripemd160_avx2.cpp p2pkh_decoder.cpp sha256_avx2.cpp
+//Win: x86_64-w64-mingw32-g++ -std=c++11 -Ofast -ffast-math -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -fipa-modref -flto -fassociative-math -fopenmp -mavx2 -mbmi2 -madx -static -static -o Dist_Cyclone.exe Dist_Cyclone.cpp -lws2_32 SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp Point.cpp ripemd160_avx2.cpp p2pkh_decoder.cpp sha256_avx2.cpp
+
+//Linux: g++ -std=c++17 -Ofast -ffast-math -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -fipa-modref -flto -fassociative-math -fopenmp -mavx2 -mbmi2 -madx -o Dist_Cyclone Dist_Cyclone.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp Point.cpp ripemd160_avx2.cpp p2pkh_decoder.cpp sha256_avx2.cpp
 
 #include <thread>
 #include <immintrin.h>
@@ -28,41 +30,39 @@
 #include "IntGroup.h"
 
 static constexpr int POINTS_BATCH_SIZE = 256;
-static constexpr int HASH_BATCH_SIZE   = 8;
-static constexpr double statusIntervalSec = 5.0;
+static constexpr int HASH_BATCH_SIZE = 8;
+static constexpr double STATUS_INTERVAL_SEC = 5.0;
 
-int g_sock = -1;
-std::string g_serverIp;
-int g_serverPort = 0;
-std::string g_targetAddress;
-unsigned long long g_totalRanges = 0ULL;
-std::string g_currentRange = "";
-bool g_globalMatchFound = false;
-bool g_searchFinished = false;
-std::string g_foundPrivHex;
-std::string g_foundPubHex;
-std::string g_foundWIF;
+static int g_sock = -1;
+static std::string g_serverIp;
+static int g_serverPort = 0;
+static std::string g_targetAddress;
+static unsigned long long g_totalRanges = 0ULL;
+static std::string g_currentRange;
+static bool g_globalMatchFound = false;
+static bool g_searchFinished = false;
+static std::string g_foundPrivHex;
+static std::string g_foundPubHex;
+static std::string g_foundWIF;
+static unsigned long long g_globalComparedCount = 0ULL;
+static double g_globalElapsedTime = 0.0;
+static std::chrono::time_point<std::chrono::high_resolution_clock> g_timeStart;
+static bool g_timeInitialized = false;
 
-unsigned long long g_globalComparedCount = 0ULL;
-double g_globalElapsedTime = 0.0;
-std::chrono::time_point<std::chrono::high_resolution_clock> g_timeStart;
-bool g_timeInitialized = false;
-
-// ---------- BigNum helpers ----------
-std::vector<uint64_t> hexToBigNum(const std::string& hex) {
-    std::vector<uint64_t> bigNum;
-    size_t len = hex.size();
-    bigNum.reserve((len + 15) / 16);
-    for (size_t i = 0; i < len; i += 16) {
-        size_t start = (len >= 16 + i) ? len - 16 - i : 0;
-        size_t partLen = (len >= 16 + i) ? 16 : (len - i);
-        uint64_t value = std::stoull(hex.substr(start, partLen), nullptr, 16);
-        bigNum.push_back(value);
+static std::vector<uint64_t> hexToBigNum(const std::string &hex) {
+    std::vector<uint64_t> v;
+    size_t l = hex.size();
+    v.reserve((l + 15) / 16);
+    for (size_t i = 0; i < l; i += 16) {
+        size_t s = (l >= 16 + i) ? l - 16 - i : 0;
+        size_t pl = (l >= 16 + i) ? 16 : (l - i);
+        uint64_t val = std::stoull(hex.substr(s, pl), nullptr, 16);
+        v.push_back(val);
     }
-    return bigNum;
+    return v;
 }
 
-std::string bigNumToHex(const std::vector<uint64_t>& num) {
+static std::string bigNumToHex(const std::vector<uint64_t> &num) {
     std::ostringstream oss;
     for (auto it = num.rbegin(); it != num.rend(); ++it) {
         if (it != num.rbegin()) oss << std::setw(16) << std::setfill('0');
@@ -71,15 +71,15 @@ std::string bigNumToHex(const std::vector<uint64_t>& num) {
     return oss.str();
 }
 
-std::vector<uint64_t> singleElementVector(uint64_t val) {
+static std::vector<uint64_t> singleElementVector(uint64_t val) {
     return { val };
 }
 
-std::vector<uint64_t> bigNumAdd(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+static std::vector<uint64_t> bigNumAdd(const std::vector<uint64_t> &a, const std::vector<uint64_t> &b) {
     std::vector<uint64_t> sum;
     sum.reserve(std::max(a.size(), b.size()) + 1);
     uint64_t carry = 0;
-    for (size_t i = 0, sz = std::max(a.size(), b.size()); i < sz; ++i) {
+    for (size_t i = 0, sz = std::max(a.size(), b.size()); i < sz; i++) {
         uint64_t x = (i < a.size()) ? a[i] : 0ULL;
         uint64_t y = (i < b.size()) ? b[i] : 0ULL;
         __uint128_t s = ( __uint128_t )x + ( __uint128_t )y + carry;
@@ -90,20 +90,20 @@ std::vector<uint64_t> bigNumAdd(const std::vector<uint64_t>& a, const std::vecto
     return sum;
 }
 
-std::vector<uint64_t> bigNumSubtract(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b) {
+static std::vector<uint64_t> bigNumSubtract(const std::vector<uint64_t> &a, const std::vector<uint64_t> &b) {
     std::vector<uint64_t> diff = a;
     uint64_t borrow = 0;
-    for (size_t i = 0; i < b.size(); ++i) {
-        uint64_t subtrahend = b[i];
-        if (diff[i] < subtrahend + borrow) {
-            diff[i] = diff[i] + (~0ULL) - subtrahend - borrow + 1ULL;
+    for (size_t i = 0; i < b.size(); i++) {
+        uint64_t sub = b[i];
+        if (diff[i] < sub + borrow) {
+            diff[i] = diff[i] + (~0ULL) - sub - borrow + 1ULL;
             borrow = 1;
         } else {
-            diff[i] -= (subtrahend + borrow);
+            diff[i] -= (sub + borrow);
             borrow = 0;
         }
     }
-    for (size_t i = b.size(); i < diff.size() && borrow; ++i) {
+    for (size_t i = b.size(); i < diff.size() && borrow; i++) {
         if (diff[i] == 0ULL) {
             diff[i] = ~0ULL;
         } else {
@@ -115,52 +115,48 @@ std::vector<uint64_t> bigNumSubtract(const std::vector<uint64_t>& a, const std::
     return diff;
 }
 
-std::pair<std::vector<uint64_t>, uint64_t> bigNumDivide(const std::vector<uint64_t>& a, uint64_t divisor) {
-    std::vector<uint64_t> quotient(a.size(), 0ULL);
-    uint64_t remainder = 0;
-    for (int i = (int)a.size() - 1; i >= 0; --i) {
-        __uint128_t temp = ((__uint128_t)remainder << 64) | a[i];
-        uint64_t q = (uint64_t)(temp / divisor);
-        uint64_t r = (uint64_t)(temp % divisor);
-        quotient[i] = q;
-        remainder = r;
+static std::pair<std::vector<uint64_t>, uint64_t> bigNumDivide(const std::vector<uint64_t> &a, uint64_t d) {
+    std::vector<uint64_t> q(a.size(), 0ULL);
+    uint64_t r = 0;
+    for (int i = (int)a.size() - 1; i >= 0; i--) {
+        __uint128_t tmp = ((__uint128_t)r << 64) | a[i];
+        uint64_t qq = (uint64_t)(tmp / d);
+        uint64_t rr = (uint64_t)(tmp % d);
+        q[i] = qq;
+        r = rr;
     }
-    while (!quotient.empty() && quotient.back() == 0ULL) quotient.pop_back();
-    return { quotient, remainder };
+    while (!q.empty() && q.back() == 0ULL) q.pop_back();
+    return {q, r};
 }
 
-long double hexStrToLongDouble(const std::string &hex) {
-    long double result = 0.0L;
+static long double hexStrToLongDouble(const std::string &hex) {
+    long double res = 0.0L;
     for (char c : hex) {
-        result *= 16.0L;
-        if (c >= '0' && c <= '9') {
-            result += (c - '0');
-        } else if (c >= 'A' && c <= 'F') {
-            result += (c - 'A' + 10);
-        } else if (c >= 'a' && c <= 'f') {
-            result += (c - 'a' + 10);
-        }
+        res *= 16.0L;
+        if (c >= '0' && c <= '9') res += (c - '0');
+        else if (c >= 'A' && c <= 'F') res += (c - 'A' + 10);
+        else if (c >= 'a' && c <= 'f') res += (c - 'a' + 10);
     }
-    return result;
+    return res;
 }
 
-// ---------- Conversion to/from Int library ----------
 static inline std::string padHexTo64(const std::string &hex) {
-    return (hex.size() >= 64) ? hex : std::string(64 - hex.size(), '0') + hex;
+    if (hex.size() >= 64) return hex;
+    return std::string(64 - hex.size(), '0') + hex;
 }
 
 static inline Int hexToInt(const std::string &hex) {
-    Int number;
+    Int x;
     char buf[65] = {0};
     std::strncpy(buf, hex.c_str(), 64);
-    number.SetBase16(buf);
-    return number;
+    x.SetBase16(buf);
+    return x;
 }
 
-static inline std::string intToHex(const Int &value) {
-    Int temp;
-    temp.Set((Int*)&value);
-    return temp.GetBase16();
+static inline std::string intToHex(const Int &v) {
+    Int tmp;
+    tmp.Set((Int*)&v);
+    return tmp.GetBase16();
 }
 
 static inline bool intGreater(const Int &a, const Int &b) {
@@ -170,152 +166,112 @@ static inline bool intGreater(const Int &a, const Int &b) {
     return (ha > hb);
 }
 
-// ---------- SECP helpers ----------
-static inline bool isEven(const Int &number) {
-    return ((Int&)number).IsEven();
+static inline bool isEven(const Int &n) {
+    return ((Int&)n).IsEven();
 }
 
 static inline std::string intXToHex64(const Int &x) {
-    Int temp;
-    temp.Set((Int*)&x);
-    std::string hex = temp.GetBase16();
-    if (hex.size() < 64) hex.insert(0, 64 - hex.size(), '0');
-    return hex;
+    Int t;
+    t.Set((Int*)&x);
+    std::string h = t.GetBase16();
+    if (h.size() < 64) h.insert(0, 64 - h.size(), '0');
+    return h;
 }
 
-static inline std::string pointToCompressedHex(const Point &point) {
-    return (isEven(point.y) ? "02" : "03") + intXToHex64(point.x);
+static inline std::string pointToCompressedHex(const Point &p) {
+    return (isEven(p.y) ? "02" : "03") + intXToHex64(p.x);
 }
 
-static inline void pointToCompressedBin(const Point &point, uint8_t outCompressed[33]) {
-    outCompressed[0] = isEven(point.y) ? 0x02 : 0x03;
-    Int temp;
-    temp.Set((Int*)&point.x);
-    for (int i = 0; i < 32; i++) {
-        outCompressed[1 + i] = (uint8_t)temp.GetByte(31 - i);
+static inline void pointToCompressedBin(const Point &p, uint8_t out[33]) {
+    out[0] = isEven(p.y) ? 0x02 : 0x03;
+    Int tmp;
+    tmp.Set((Int*)&p.x);
+    for (int i = 0; i < 32; i++) out[1 + i] = (uint8_t)tmp.GetByte(31 - i);
+}
+
+static inline void prepareShaBlock(const uint8_t *src, size_t len, uint8_t *blk) {
+    std::memset(blk, 0, 64);
+    std::memcpy(blk, src, len);
+    blk[len] = 0x80;
+    uint32_t bits = (uint32_t)(len * 8);
+    blk[60] = (uint8_t)((bits >> 24) & 0xFF);
+    blk[61] = (uint8_t)((bits >> 16) & 0xFF);
+    blk[62] = (uint8_t)((bits >> 8) & 0xFF);
+    blk[63] = (uint8_t)(bits & 0xFF);
+}
+
+static inline void prepareRipemdBlock(const uint8_t *src, uint8_t *blk) {
+    std::memset(blk, 0, 64);
+    std::memcpy(blk, src, 32);
+    blk[32] = 0x80;
+    uint32_t bits = 256;
+    blk[60] = (uint8_t)((bits >> 24) & 0xFF);
+    blk[61] = (uint8_t)((bits >> 16) & 0xFF);
+    blk[62] = (uint8_t)((bits >> 8) & 0xFF);
+    blk[63] = (uint8_t)(bits & 0xFF);
+}
+
+static void computeHash160BatchBinSingle(int n, uint8_t pk[][33], uint8_t h[][20]) {
+    std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> shaIn;
+    std::array<std::array<uint8_t, 32>, HASH_BATCH_SIZE> shaOut;
+    std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> rmdIn;
+    std::array<std::array<uint8_t, 20>, HASH_BATCH_SIZE> rmdOut;
+    size_t totalBatches = (n + (HASH_BATCH_SIZE - 1)) / HASH_BATCH_SIZE;
+    for (size_t b = 0; b < totalBatches; b++) {
+        size_t count = std::min<size_t>(HASH_BATCH_SIZE, n - b * HASH_BATCH_SIZE);
+        for (size_t i = 0; i < count; i++) prepareShaBlock(pk[b * HASH_BATCH_SIZE + i], 33, shaIn[i].data());
+        for (size_t i = count; i < HASH_BATCH_SIZE; i++) std::memcpy(shaIn[i].data(), shaIn[0].data(), 64);
+        const uint8_t *inPtr[HASH_BATCH_SIZE];
+        uint8_t *outPtr[HASH_BATCH_SIZE];
+        for (int i = 0; i < HASH_BATCH_SIZE; i++) {
+            inPtr[i] = shaIn[i].data();
+            outPtr[i] = shaOut[i].data();
+        }
+        sha256avx2_8B(inPtr[0], inPtr[1], inPtr[2], inPtr[3], inPtr[4], inPtr[5], inPtr[6], inPtr[7],
+                      outPtr[0], outPtr[1], outPtr[2], outPtr[3], outPtr[4], outPtr[5], outPtr[6], outPtr[7]);
+        for (size_t i = 0; i < count; i++) prepareRipemdBlock(shaOut[i].data(), rmdIn[i].data());
+        for (size_t i = count; i < HASH_BATCH_SIZE; i++) std::memcpy(rmdIn[i].data(), rmdIn[0].data(), 64);
+        for (int i = 0; i < HASH_BATCH_SIZE; i++) {
+            inPtr[i] = rmdIn[i].data();
+            outPtr[i] = rmdOut[i].data();
+        }
+        ripemd160avx2::ripemd160avx2_32((unsigned char*)inPtr[0], (unsigned char*)inPtr[1],
+                                        (unsigned char*)inPtr[2], (unsigned char*)inPtr[3],
+                                        (unsigned char*)inPtr[4], (unsigned char*)inPtr[5],
+                                        (unsigned char*)inPtr[6], (unsigned char*)inPtr[7],
+                                        outPtr[0], outPtr[1], outPtr[2], outPtr[3],
+                                        outPtr[4], outPtr[5], outPtr[6], outPtr[7]);
+        for (size_t i = 0; i < count; i++) std::memcpy(h[b * HASH_BATCH_SIZE + i], rmdOut[i].data(), 20);
     }
 }
 
-// ---------- Hash helpers ----------
-inline void prepareShaBlock(const uint8_t* dataSrc, size_t dataLen, uint8_t* outBlock) {
-    std::fill_n(outBlock, 64, 0);
-    std::memcpy(outBlock, dataSrc, dataLen);
-    outBlock[dataLen] = 0x80;
-    uint32_t bitLen = (uint32_t)(dataLen * 8);
-    outBlock[60] = (uint8_t)((bitLen >> 24) & 0xFF);
-    outBlock[61] = (uint8_t)((bitLen >> 16) & 0xFF);
-    outBlock[62] = (uint8_t)((bitLen >> 8) & 0xFF);
-    outBlock[63] = (uint8_t)(bitLen & 0xFF);
-}
-
-inline void prepareRipemdBlock(const uint8_t* dataSrc, uint8_t* outBlock) {
-    std::fill_n(outBlock, 64, 0);
-    std::memcpy(outBlock, dataSrc, 32);
-    outBlock[32] = 0x80;
-    uint32_t bitLen = 256;
-    outBlock[60] = (uint8_t)((bitLen >> 24) & 0xFF);
-    outBlock[61] = (uint8_t)((bitLen >> 16) & 0xFF);
-    outBlock[62] = (uint8_t)((bitLen >> 8) & 0xFF);
-    outBlock[63] = (uint8_t)(bitLen & 0xFF);
-}
-
-static void computeHash160BatchBinSingle(int numKeys, uint8_t pubKeys[][33], uint8_t hashResults[][20]) {
-    // Batches of 8
-    std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> shaInputs;
-    std::array<std::array<uint8_t, 32>, HASH_BATCH_SIZE> shaOutputs;
-    std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> ripemdInputs;
-    std::array<std::array<uint8_t, 20>, HASH_BATCH_SIZE> ripemdOutputs;
-    size_t totalBatches = (numKeys + (HASH_BATCH_SIZE - 1)) / HASH_BATCH_SIZE;
-
-    for (size_t batch = 0; batch < totalBatches; batch++) {
-        size_t batchCount = std::min<size_t>(HASH_BATCH_SIZE, numKeys - batch * HASH_BATCH_SIZE);
-        // Prepare for SHA
-        for (size_t i = 0; i < batchCount; i++) {
-            size_t idx = batch * HASH_BATCH_SIZE + i;
-            prepareShaBlock(pubKeys[idx], 33, shaInputs[i].data());
-        }
-        // If fewer than HASH_BATCH_SIZE, replicate data to fill
-        for (size_t i = batchCount; i < HASH_BATCH_SIZE; i++) {
-            std::memcpy(shaInputs[i].data(), shaInputs[0].data(), 64);
-        }
-        // Perform parallel SHA
-        const uint8_t* inPtr[HASH_BATCH_SIZE];
-        uint8_t* outPtr[HASH_BATCH_SIZE];
-        for (int i = 0; i < HASH_BATCH_SIZE; i++) {
-            inPtr[i] = shaInputs[i].data();
-            outPtr[i] = shaOutputs[i].data();
-        }
-        sha256avx2_8B(
-            inPtr[0], inPtr[1], inPtr[2], inPtr[3],
-            inPtr[4], inPtr[5], inPtr[6], inPtr[7],
-            outPtr[0], outPtr[1], outPtr[2], outPtr[3],
-            outPtr[4], outPtr[5], outPtr[6], outPtr[7]
-        );
-
-        // Prepare for RIPEMD
-        for (size_t i = 0; i < batchCount; i++) {
-            prepareRipemdBlock(shaOutputs[i].data(), ripemdInputs[i].data());
-        }
-        for (size_t i = batchCount; i < HASH_BATCH_SIZE; i++) {
-            std::memcpy(ripemdInputs[i].data(), ripemdInputs[0].data(), 64);
-        }
-        for (int i = 0; i < HASH_BATCH_SIZE; i++) {
-            inPtr[i] = ripemdInputs[i].data();
-            outPtr[i] = ripemdOutputs[i].data();
-        }
-        ripemd160avx2::ripemd160avx2_32(
-            (unsigned char*)inPtr[0], (unsigned char*)inPtr[1],
-            (unsigned char*)inPtr[2], (unsigned char*)inPtr[3],
-            (unsigned char*)inPtr[4], (unsigned char*)inPtr[5],
-            (unsigned char*)inPtr[6], (unsigned char*)inPtr[7],
-            outPtr[0], outPtr[1], outPtr[2], outPtr[3],
-            outPtr[4], outPtr[5], outPtr[6], outPtr[7]
-        );
-        // Copy results
-        for (size_t i = 0; i < batchCount; i++) {
-            size_t idx = batch * HASH_BATCH_SIZE + i;
-            std::memcpy(hashResults[idx], ripemdOutputs[i].data(), 20);
-        }
-    }
-}
-
-// ---------- Print helpers ----------
-static void printUsage(const char* programName) {
-    std::cerr << "Usage: " << programName << " -i <IP address> -p <port>\n";
-}
-
-static std::string formatElapsedTime(double seconds) {
-    int hrs = (int)seconds / 3600;
-    int mins = ((int)seconds % 3600) / 60;
-    int secs = (int)seconds % 60;
+static std::string formatElapsedTime(double sec) {
+    int hrs = (int)sec / 3600;
+    int mins = ((int)sec % 3600) / 60;
+    int sc = (int)sec % 60;
     std::ostringstream oss;
     oss << std::setw(2) << std::setfill('0') << hrs << ":"
         << std::setw(2) << std::setfill('0') << mins << ":"
-        << std::setw(2) << std::setfill('0') << secs;
+        << std::setw(2) << std::setfill('0') << sc;
     return oss.str();
 }
 
 static void printFullStats(int numCPUs, double mkeysPerSec, unsigned long long totalChecked,
-                           double elapsedTime, long double progressPercent) {
+                           double elapsedTime, long double progress) {
     static bool firstPrint = true;
-    if (!firstPrint) {
-        // Move cursor up 12 lines to overwrite
-        std::cout << "\033[12A";
-    } else {
-        firstPrint = false;
-    }
+    if (!firstPrint) std::cout << "\033[12A";
+    else firstPrint = false;
     std::cout << "================= SRV COMMUNICATION =================\n";
     std::cout << "SRV ip-address       : " << g_serverIp << "\n";
     std::cout << "SRV port             : " << g_serverPort << "\n";
     std::cout << "Connection status    : Established\n";
-
     std::cout << "================= WORK IN PROGRESS ==================\n";
     std::cout << "Target Address: " << g_targetAddress << "\n";
     std::cout << "CPU Threads   : " << numCPUs << "\n";
     std::cout << "Mkeys/s       : " << std::fixed << std::setprecision(2) << mkeysPerSec << "\n";
     std::cout << "Total Checked : " << totalChecked << "\n";
     std::cout << "Elapsed Time  : " << formatElapsedTime(elapsedTime) << "\n";
-    std::cout << "Progress      : " << std::fixed << std::setprecision(2) << progressPercent << " %\n";
+    std::cout << "Progress      : " << std::fixed << std::setprecision(2) << progress << " %\n";
     std::cout << "Total ranges  : " << g_totalRanges << "\n";
     std::cout.flush();
     if (g_searchFinished) {
@@ -330,8 +286,7 @@ static void printFullStats(int numCPUs, double mkeysPerSec, unsigned long long t
     std::cout.flush();
 }
 
-// ---------- Signal handling ----------
-void handleSignal(int signum) {
+static void handleSignal(int) {
     if (!g_currentRange.empty() && g_sock != -1) {
         std::string msg = g_currentRange + " NOT COMPUTED\n";
         send(g_sock, msg.c_str(), msg.size(), 0);
@@ -340,14 +295,30 @@ void handleSignal(int signum) {
     std::exit(0);
 }
 
-void handleAlive() {
+static std::string recvLine(int sock) {
+    std::string line;
+    char c;
+    while (true) {
+        ssize_t r = recv(sock, &c, 1, 0);
+        if (r == 1) {
+            if (c == '\n') break;
+            line.push_back(c);
+        } else if (r == 0) {
+            return "";
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            return "";
+        }
+    }
+    return line;
+}
+
+static void aliveThreadFunc() {
     while (!g_searchFinished) {
-        std::this_thread::sleep_for(std::chrono::seconds(300));
+        std::this_thread::sleep_for(std::chrono::seconds(29));
         if (!g_searchFinished && g_sock != -1) {
             std::string aliveMsg = "ALIVE\n";
-            if (send(g_sock, aliveMsg.c_str(), aliveMsg.size(), 0) == -1) {
-                std::cerr << "Error sending ALIVE to server!\n";
-            }
+            send(g_sock, aliveMsg.c_str(), aliveMsg.size(), 0);
         }
     }
 }
@@ -358,380 +329,269 @@ struct ThreadRangeStruct {
 };
 
 int main(int argc, char* argv[]) {
-    // Parse args
     for (int i = 1; i < argc; i++) {
-        if (!std::strcmp(argv[i], "-i") && i + 1 < argc) {
-            g_serverIp = argv[++i];
-        } else if (!std::strcmp(argv[i], "-p") && i + 1 < argc) {
-            g_serverPort = std::stoi(argv[++i]);
-        } else {
-            std::cerr << "Unknown parameter: " << argv[i] << std::endl;
-            printUsage(argv[0]);
+        if (!std::strcmp(argv[i], "-i") && i + 1 < argc) g_serverIp = argv[++i];
+        else if (!std::strcmp(argv[i], "-p") && i + 1 < argc) g_serverPort = std::stoi(argv[++i]);
+        else {
+            std::cerr << "Usage: " << argv[0] << " -i <IP> -p <port>\n";
             return 1;
         }
     }
     if (g_serverIp.empty() || g_serverPort == 0) {
-        std::cerr << "Options -i <IP address> and -p <port> are required!\n";
-        printUsage(argv[0]);
+        std::cerr << "Usage: " << argv[0] << " -i <IP> -p <port>\n";
         return 1;
     }
-
-    // Create socket
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("Socket creation error");
+        perror("socket");
         return 1;
     }
-
-    // Connect
-    sockaddr_in servAddr;
-    servAddr.sin_family = AF_INET;
-    servAddr.sin_port = htons(g_serverPort);
-    if (inet_pton(AF_INET, g_serverIp.c_str(), &servAddr.sin_addr) <= 0) {
-        std::cerr << "Invalid IP address: " << g_serverIp << std::endl;
+    sockaddr_in srv;
+    srv.sin_family = AF_INET;
+    srv.sin_port = htons(g_serverPort);
+    if (inet_pton(AF_INET, g_serverIp.c_str(), &srv.sin_addr) <= 0) {
+        std::cerr << "Invalid IP address\n";
         return 1;
     }
-    if (connect(sock, (sockaddr*)&servAddr, sizeof(servAddr)) < 0) {
-        perror("Failed to connect to server");
+    if (connect(sock, (sockaddr*)&srv, sizeof(srv)) < 0) {
+        perror("connect");
         return 1;
     }
     g_sock = sock;
-
-    // Handle signals
     signal(SIGINT, handleSignal);
     signal(SIGTERM, handleSignal);
     signal(SIGHUP, handleSignal);
-
-    // Launch ALIVE thread (detach to avoid join issues)
-    std::thread aliveThread(handleAlive);
-    aliveThread.detach();
-
-    // Request target address
+    std::thread alv(aliveThreadFunc);
+    alv.detach();
     {
         std::string cmd = "get target\n";
         if (send(sock, cmd.c_str(), cmd.size(), 0) < 0) {
-            std::cerr << "Error sending 'get target' command\n";
             close(sock);
             return 1;
         }
-        char buffer[256];
-        ssize_t len = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (len <= 0) {
-            std::cerr << "Error receiving response from server (get target).\n";
+        std::string resp = recvLine(sock);
+        if (resp.empty()) {
             close(sock);
             return 1;
         }
-        buffer[len] = '\0';
-        g_targetAddress = buffer;
-        if (!g_targetAddress.empty() && g_targetAddress.back() == '\n') {
-            g_targetAddress.pop_back();
-        }
+        g_targetAddress = resp;
     }
-
-    // Decode target address
     std::vector<uint8_t> targetHash160;
     try {
         targetHash160 = P2PKHDecoder::getHash160(g_targetAddress);
-        if (targetHash160.size() != 20) {
-            throw std::invalid_argument("Invalid hash160 length.");
-        }
-    } catch (const std::exception &ex) {
-        std::cerr << "Error processing address: " << ex.what() << std::endl;
+        if (targetHash160.size() != 20) throw std::invalid_argument("Bad hash160 length");
+    } catch (...) {
         close(sock);
         return 1;
     }
-
-    // Timing
     if (!g_timeInitialized) {
         g_timeStart = std::chrono::high_resolution_clock::now();
         g_timeInitialized = true;
     }
-
     int numCPUs = omp_get_num_procs();
     printFullStats(numCPUs, 0.0, g_globalComparedCount, g_globalElapsedTime, 0.0L);
-
-    // Main loop
     while (true) {
-        // Request range
-        std::string rangeCmd = "get range\n";
-        if (send(sock, rangeCmd.c_str(), rangeCmd.size(), 0) < 0) {
-            std::cerr << "Error sending 'get range' command\n";
-            break;
-        }
-        char rangeBuf[256];
-        ssize_t rlen = recv(sock, rangeBuf, sizeof(rangeBuf) - 1, 0);
-        if (rlen <= 0) {
-            // No more data or server closed
+        std::string getCmd = "get range\n";
+        if (send(sock, getCmd.c_str(), getCmd.size(), 0) < 0) {
             g_searchFinished = true;
             break;
         }
-        rangeBuf[rlen] = '\0';
-        std::string rangeStr = rangeBuf;
-        if (!rangeStr.empty() && rangeStr.back() == '\n') {
-            rangeStr.pop_back();
+        std::string rangeStr = recvLine(sock);
+        if (rangeStr.empty()) {
+            g_searchFinished = true;
+            break;
         }
-        // Could be "NO RANGE" if there's nothing left
         if (rangeStr == "NO RANGE") {
             g_searchFinished = true;
             break;
         }
-
         g_currentRange = rangeStr;
         g_totalRanges++;
-        size_t colonPos = rangeStr.find(':');
-        if (colonPos == std::string::npos) {
-            // Invalid range
+        size_t cPos = rangeStr.find(':');
+        if (cPos == std::string::npos) {
             g_searchFinished = true;
             break;
         }
-
-        std::string rangeStartHex = rangeStr.substr(0, colonPos);
-        std::string rangeEndHex = rangeStr.substr(colonPos + 1);
-
+        std::string rangeStartHex = rangeStr.substr(0, cPos);
+        std::string rangeEndHex = rangeStr.substr(cPos + 1);
         auto rangeStart = hexToBigNum(rangeStartHex);
         auto rangeEnd = hexToBigNum(rangeEndHex);
-        bool validRange = true;
+        bool valid = true;
         if (rangeStart.size() > rangeEnd.size() ||
-           (rangeStart.size() == rangeEnd.size() &&
-            bigNumToHex(rangeStart) > bigNumToHex(rangeEnd))) {
-            validRange = false;
+           (rangeStart.size() == rangeEnd.size() && bigNumToHex(rangeStart) > bigNumToHex(rangeEnd))) {
+            valid = false;
         }
-        if (!validRange) {
+        if (!valid) {
             g_searchFinished = true;
             break;
         }
-
-        auto rangeSize = bigNumSubtract(rangeEnd, rangeStart);
-        rangeSize = bigNumAdd(rangeSize, singleElementVector(1ULL));
-        std::string rangeSizeHex = bigNumToHex(rangeSize);
-        long double totalRangeLD = hexStrToLongDouble(rangeSizeHex);
-
+        auto rSize = bigNumSubtract(rangeEnd, rangeStart);
+        rSize = bigNumAdd(rSize, singleElementVector(1ULL));
+        std::string rSizeHex = bigNumToHex(rSize);
+        long double totalRangeLD = hexStrToLongDouble(rSizeHex);
         unsigned long long rangeComparedCount = 0ULL;
-        auto divres = bigNumDivide(rangeSize, (uint64_t)numCPUs);
+        auto divres = bigNumDivide(rSize, (uint64_t)numCPUs);
         auto chunkSize = divres.first;
         uint64_t remainder = divres.second;
-
-        std::vector<ThreadRangeStruct> threadRanges(numCPUs);
-        std::vector<uint64_t> currentStart = rangeStart;
+        std::vector<ThreadRangeStruct> thrRanges(numCPUs);
+        std::vector<uint64_t> curStart = rangeStart;
         for (int t = 0; t < numCPUs; t++) {
-            auto currentEnd = bigNumAdd(currentStart, chunkSize);
-            if (t < (int)remainder) {
-                currentEnd = bigNumAdd(currentEnd, singleElementVector(1ULL));
-            }
-            currentEnd = bigNumSubtract(currentEnd, singleElementVector(1ULL));
-            threadRanges[t].startHex = bigNumToHex(currentStart);
-            threadRanges[t].endHex   = bigNumToHex(currentEnd);
-            currentStart = bigNumAdd(currentEnd, singleElementVector(1ULL));
+            auto curEnd = bigNumAdd(curStart, chunkSize);
+            if (t < (int)remainder) curEnd = bigNumAdd(curEnd, singleElementVector(1ULL));
+            curEnd = bigNumSubtract(curEnd, singleElementVector(1ULL));
+            thrRanges[t].startHex = bigNumToHex(curStart);
+            thrRanges[t].endHex = bigNumToHex(curEnd);
+            curStart = bigNumAdd(curEnd, singleElementVector(1ULL));
         }
-
-        bool matchFound = false; // local for this range
-        auto lastStatusUpdate = std::chrono::high_resolution_clock::now();
-
-        // Parallel search
-        #pragma omp parallel num_threads(numCPUs) shared(matchFound, totalRangeLD, targetHash160, lastStatusUpdate, rangeComparedCount)
+        bool matchFound = false;
+        auto lastUpdate = std::chrono::high_resolution_clock::now();
+        #pragma omp parallel num_threads(numCPUs) shared(matchFound, totalRangeLD, targetHash160, lastUpdate, rangeComparedCount)
         {
-            int threadId = omp_get_thread_num();
-            Int privateKey = hexToInt(threadRanges[threadId].startHex);
-            Int threadRangeEnd = hexToInt(threadRanges[threadId].endHex);
-
+            int tid = omp_get_thread_num();
+            Int privKey = hexToInt(thrRanges[tid].startHex);
+            Int endKey = hexToInt(thrRanges[tid].endHex);
             Secp256K1 secp;
             secp.Init();
-
-            // Precompute plus/minus for each offset in a batch
             std::vector<Point> plusPoints(POINTS_BATCH_SIZE);
             std::vector<Point> minusPoints(POINTS_BATCH_SIZE);
             for (int i = 0; i < POINTS_BATCH_SIZE; i++) {
-                Int tmp; 
-                tmp.SetInt32(i);
+                Int tmp; tmp.SetInt32(i);
                 Point p = secp.ComputePublicKey(&tmp);
                 plusPoints[i] = p;
                 p.y.ModNeg();
                 minusPoints[i] = p;
             }
-
-            // We'll do 2*POINTS_BATCH_SIZE points for each step
             std::vector<Int> deltaX(POINTS_BATCH_SIZE);
-            IntGroup modGroup(POINTS_BATCH_SIZE);
-            int fullBatchSize = 2 * POINTS_BATCH_SIZE;
-
-            std::vector<Point> pointBatch(fullBatchSize);
-            uint8_t localPubKeys[fullBatchSize][33];
-            uint8_t localHashResults[HASH_BATCH_SIZE][20];
-            int localBatchCount = 0;
-            int pointIndices[HASH_BATCH_SIZE];
-            unsigned long long localComparedCount = 0ULL;
-
-            __m128i target16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(targetHash160.data()));
-
+            IntGroup ig(POINTS_BATCH_SIZE);
+            int fbSize = 2 * POINTS_BATCH_SIZE;
+            std::vector<Point> pBatch(fbSize);
+            uint8_t pubKeys[fbSize][33];
+            uint8_t hashes[HASH_BATCH_SIZE][20];
+            int bCount = 0;
+            int idxMap[HASH_BATCH_SIZE];
+            unsigned long long locCount = 0ULL;
+            __m128i tgt = _mm_loadu_si128(reinterpret_cast<const __m128i*>(targetHash160.data()));
             while (true) {
-                // If we've found a match in another thread, or out of range -> break
                 if (matchFound) break;
-                if (intGreater(privateKey, threadRangeEnd)) break;
-
-                // Compute public key for the "startPoint" of this iteration
-                Int currentBatchKey; 
-                currentBatchKey.Set(&privateKey);
-                Point startPoint = secp.ComputePublicKey(&currentBatchKey);
-
-                // Prepare deltaX for plusPoints
+                if (intGreater(privKey, endKey)) break;
+                Int startPk; startPk.Set(&privKey);
+                Point startP = secp.ComputePublicKey(&startPk);
                 for (int i = 0; i < POINTS_BATCH_SIZE; i++) {
-                    deltaX[i].ModSub(&plusPoints[i].x, &startPoint.x);
+                    deltaX[i].ModSub(&plusPoints[i].x, &startP.x);
                 }
-                modGroup.Set(deltaX.data());
-                modGroup.ModInv();
-
-                // Compute the batch of public keys
+                ig.Set(deltaX.data());
+                ig.ModInv();
                 for (int i = 0; i < POINTS_BATCH_SIZE; i++) {
-                    // Add the offset i
-                    Point tempPoint = startPoint;
-                    Int deltaY; deltaY.ModSub(&plusPoints[i].y, &startPoint.y);
-                    Int slope; slope.ModMulK1(&deltaY, &deltaX[i]);
+                    Point tp = startP;
+                    Int dY; dY.ModSub(&plusPoints[i].y, &startP.y);
+                    Int slope; slope.ModMulK1(&dY, &deltaX[i]);
                     Int slopeSq; slopeSq.ModSquareK1(&slope);
-
-                    Int tmpX; tmpX.Set(&startPoint.x);
-                    tmpX.ModNeg(); 
-                    tmpX.ModAdd(&slopeSq);
-                    tmpX.ModSub(&plusPoints[i].x);
-
-                    tempPoint.x.Set(&tmpX);
-                    Int diffX; diffX.Set(&startPoint.x);
-                    diffX.ModSub(&tempPoint.x);
-                    diffX.ModMulK1(&slope);
-                    tempPoint.y.ModNeg();
-                    tempPoint.y.ModAdd(&diffX);
-                    pointBatch[i] = tempPoint;
+                    Int nx; nx.Set(&startP.x);
+                    nx.ModNeg(); nx.ModAdd(&slopeSq); nx.ModSub(&plusPoints[i].x);
+                    tp.x.Set(&nx);
+                    Int dx; dx.Set(&startP.x);
+                    dx.ModSub(&tp.x); dx.ModMulK1(&slope);
+                    tp.y.ModNeg(); tp.y.ModAdd(&dx);
+                    pBatch[i] = tp;
                 }
-
-                // minusPoints (neg offsets)
                 for (int i = 0; i < POINTS_BATCH_SIZE; i++) {
-                    Point tempPoint = startPoint;
-                    Int deltaY; deltaY.ModSub(&minusPoints[i].y, &startPoint.y);
-                    Int slope; slope.ModMulK1(&deltaY, &deltaX[i]);
+                    Point tp = startP;
+                    Int dY; dY.ModSub(&minusPoints[i].y, &startP.y);
+                    Int slope; slope.ModMulK1(&dY, &deltaX[i]);
                     Int slopeSq; slopeSq.ModSquareK1(&slope);
-
-                    Int tmpX; tmpX.Set(&startPoint.x);
-                    tmpX.ModNeg();
-                    tmpX.ModAdd(&slopeSq);
-                    tmpX.ModSub(&minusPoints[i].x);
-
-                    tempPoint.x.Set(&tmpX);
-                    Int diffX; diffX.Set(&startPoint.x);
-                    diffX.ModSub(&tempPoint.x);
-                    diffX.ModMulK1(&slope);
-                    tempPoint.y.ModNeg();
-                    tempPoint.y.ModAdd(&diffX);
-                    pointBatch[POINTS_BATCH_SIZE + i] = tempPoint;
+                    Int nx; nx.Set(&startP.x);
+                    nx.ModNeg(); nx.ModAdd(&slopeSq); nx.ModSub(&minusPoints[i].x);
+                    tp.x.Set(&nx);
+                    Int dx; dx.Set(&startP.x);
+                    dx.ModSub(&tp.x); dx.ModMulK1(&slope);
+                    tp.y.ModNeg(); tp.y.ModAdd(&dx);
+                    pBatch[POINTS_BATCH_SIZE + i] = tp;
                 }
-
-                // Compute Hash160 on the resulting fullBatchSize points
-                for (int i = 0; i < fullBatchSize; i++) {
-                    pointToCompressedBin(pointBatch[i], localPubKeys[localBatchCount]);
-                    pointIndices[localBatchCount] = i;
-                    localBatchCount++;
-                    if (localBatchCount == HASH_BATCH_SIZE) {
-                        computeHash160BatchBinSingle(localBatchCount, localPubKeys, localHashResults);
-
-                        // Compare each hash to target
-                        for (int j = 0; j < HASH_BATCH_SIZE; j++) {
-                            __m128i cand16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(localHashResults[j]));
-                            __m128i cmp = _mm_cmpeq_epi8(cand16, target16);
+                for (int i = 0; i < fbSize; i++) {
+                    pointToCompressedBin(pBatch[i], pubKeys[bCount]);
+                    idxMap[bCount] = i;
+                    bCount++;
+                    if (bCount == HASH_BATCH_SIZE) {
+                        computeHash160BatchBinSingle(bCount, pubKeys, hashes);
+                        for (int j = 0; j < bCount; j++) {
+                            __m128i c16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(hashes[j]));
+                            __m128i cmp = _mm_cmpeq_epi8(c16, tgt);
                             if (_mm_movemask_epi8(cmp) == 0xFFFF) {
                                 #pragma omp critical
                                 {
-                                    if (!matchFound &&
-                                        std::memcmp(localHashResults[j], targetHash160.data(), 20) == 0) 
-                                    {
+                                    if (!matchFound && std::memcmp(hashes[j], targetHash160.data(), 20) == 0) {
                                         matchFound = true;
-                                        // Save final info
-                                        auto tEndTime = std::chrono::high_resolution_clock::now();
-                                        double dt = std::chrono::duration<double>(tEndTime - g_timeStart).count();
+                                        auto tEnd = std::chrono::high_resolution_clock::now();
+                                        double dt = std::chrono::duration<double>(tEnd - g_timeStart).count();
                                         g_globalElapsedTime = dt;
-                                        g_globalComparedCount += localComparedCount;
-                                        rangeComparedCount += localComparedCount;
-
-                                        Int matchingPrivateKey; 
-                                        matchingPrivateKey.Set(&currentBatchKey);
-
-                                        int idx = pointIndices[j];
+                                        g_globalComparedCount += locCount;
+                                        rangeComparedCount += locCount;
+                                        Int mk; mk.Set(&startPk);
+                                        int idx = idxMap[j];
                                         if (idx < 256) {
-                                            Int offset; offset.SetInt32(idx);
-                                            matchingPrivateKey.Add(&offset);
+                                            Int ofs; ofs.SetInt32(idx);
+                                            mk.Add(&ofs);
                                         } else {
-                                            Int offset; offset.SetInt32(idx - 256);
-                                            matchingPrivateKey.Sub(&offset);
+                                            Int ofs; ofs.SetInt32(idx - 256);
+                                            mk.Sub(&ofs);
                                         }
-
-                                        g_foundPrivHex = padHexTo64(intToHex(matchingPrivateKey));
-                                        Point matchedPoint = pointBatch[idx];
-                                        g_foundPubHex  = pointToCompressedHex(matchedPoint);
-                                        g_foundWIF     = P2PKHDecoder::compute_wif(g_foundPrivHex, true);
+                                        g_foundPrivHex = padHexTo64(intToHex(mk));
+                                        Point matchedP = pBatch[idx];
+                                        g_foundPubHex = pointToCompressedHex(matchedP);
+                                        g_foundWIF = P2PKHDecoder::compute_wif(g_foundPrivHex, true);
                                     }
                                 }
                             }
-                            localComparedCount++;
+                            locCount++;
                             if (matchFound) break;
                         }
-                        localBatchCount = 0;
+                        bCount = 0;
                         if (matchFound) break;
                     }
                 }
-
-                // Move privateKey for the next iteration
                 {
-                    Int step; step.SetInt32(fullBatchSize - 2);
-                    privateKey.Add(&step);
+                    Int stp; stp.SetInt32(fbSize - 2);
+                    privKey.Add(&stp);
                 }
-                localComparedCount++;
-
-                // Periodic progress
+                locCount++;
                 auto now = std::chrono::high_resolution_clock::now();
-                double secondsSince = std::chrono::duration<double>(now - lastStatusUpdate).count();
-                if (secondsSince >= statusIntervalSec) {
+                double secSince = std::chrono::duration<double>(now - lastUpdate).count();
+                if (secSince >= STATUS_INTERVAL_SEC) {
                     #pragma omp critical
                     {
-                        g_globalComparedCount += localComparedCount;
-                        rangeComparedCount += localComparedCount;
-                        localComparedCount = 0ULL;
+                        g_globalComparedCount += locCount;
+                        rangeComparedCount += locCount;
+                        locCount = 0ULL;
                         double dt = std::chrono::duration<double>(now - g_timeStart).count();
                         g_globalElapsedTime = dt;
-
                         double ms = (double)g_globalComparedCount / dt / 1e6;
-                        long double rangeProgress = 0.0L;
-                        if (totalRangeLD > 0.0L) {
-                            rangeProgress = ((long double)rangeComparedCount / totalRangeLD) * 100.0L;
-                        }
-                        printFullStats(numCPUs, ms, g_globalComparedCount, g_globalElapsedTime, rangeProgress);
-                        lastStatusUpdate = now;
+                        long double rg = 0.0L;
+                        if (totalRangeLD > 0.0L) rg = ((long double)rangeComparedCount / totalRangeLD) * 100.0L;
+                        printFullStats(numCPUs, ms, g_globalComparedCount, g_globalElapsedTime, rg);
+                        lastUpdate = now;
                     }
                 }
-            } // end while
-
-            // Update global counters
+            }
             #pragma omp atomic
             g_globalComparedCount += 0;
-        } // end #pragma omp parallel
-
-        // If found in parallel region, send FOUND
+        }
         if (matchFound) {
             std::ostringstream oss;
             oss << rangeStr << " FOUND " << g_foundPrivHex << "\n";
-            std::string foundMsg = oss.str();
-            send(sock, foundMsg.c_str(), foundMsg.size(), 0);
+            std::string fMsg = oss.str();
+            send(sock, fMsg.c_str(), fMsg.size(), 0);
             g_globalMatchFound = true;
             g_searchFinished = true;
             break;
         } else {
-            // Otherwise, send NOT FOUND
-            std::string notFoundMsg = rangeStr + " NOT FOUND\n";
-            send(sock, notFoundMsg.c_str(), notFoundMsg.size(), 0);
+            std::string nfMsg = rangeStr + " NOT FOUND\n";
+            send(sock, nfMsg.c_str(), nfMsg.size(), 0);
         }
-    } // end while(true)
-
+    }
     g_searchFinished = true;
-    double dtFinal = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - g_timeStart).count();
-    double msFinal  = (double)g_globalComparedCount / dtFinal / 1e6;
-    printFullStats(numCPUs, msFinal, g_globalComparedCount, dtFinal, 0.0L);
-
+    double dtFin = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - g_timeStart).count();
+    double msFin = (double)g_globalComparedCount / dtFin / 1e6;
+    printFullStats(numCPUs, msFin, g_globalComparedCount, dtFin, 0.0L);
     close(sock);
     return 0;
 }
