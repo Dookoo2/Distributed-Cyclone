@@ -317,121 +317,80 @@ def daemonize():
         os.dup2(f.fileno(), sys.stderr.fileno())
 
 async def init_db():
-    global db, computed_ranges, computing_ranges, found_key
-    
+    global db, computed_ranges, computing_ranges
     db_exists = os.path.exists(DB_NAME) and os.path.getsize(DB_NAME) > 0
-    use_existing = False
-
-    if db_exists:
-        while True:
-            response = input(f"Database '{DB_NAME}' exists. Use it? [Y/N]: ").strip().lower()
-            if response in ['y', 'yes']:
-                use_existing = True
-                break
-            elif response in ['n', 'no']:
-                os.remove(DB_NAME)
-                db_exists = False
-                break
-            else:
-                print("Invalid input. Please enter Y or N.")
-
     db = await aiosqlite.connect(DB_NAME)
     await db.execute("PRAGMA journal_mode=WAL")
-
-    await db.execute("""CREATE TABLE IF NOT EXISTS ranges(
-                        id INTEGER PRIMARY KEY,
-                        start TEXT,
-                        end TEXT,
-                        address TEXT,
-                        status TEXT)""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS blocked(
-                        id INTEGER PRIMARY KEY,
-                        ip TEXT,
-                        blocked_time TIMESTAMP)""")
-    await db.execute("""CREATE TABLE IF NOT EXISTS found(
-                        id INTEGER PRIMARY KEY,
-                        found_key TEXT,
-                        found_time TIMESTAMP)""")
+    await db.execute("CREATE TABLE IF NOT EXISTS ranges(id INTEGER PRIMARY KEY, start TEXT, end TEXT, address TEXT, status TEXT)")
+    await db.execute("CREATE TABLE IF NOT EXISTS blocked(id INTEGER PRIMARY KEY, ip TEXT, blocked_time TIMESTAMP)")
+    await db.execute("CREATE TABLE IF NOT EXISTS found(id INTEGER PRIMARY KEY, found_key TEXT, found_time TIMESTAMP)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_st ON ranges(status)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_se ON ranges(start,end)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_se ON ranges(start, end)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_addr ON ranges(address)")
     await db.commit()
-
-    if not db_exists:
-        print(f"======= Creating Cyclone database =======")
-        print(f"Creating new database '{DB_NAME}'")
-        await init_new_database()
+    if db_exists:
+        r = input(f"Database '{DB_NAME}' exists. Use it (Y) or new (N)? [Y/N]: ").strip().lower()
+        use_existing = r in ["y", "yes"]
     else:
-        if use_existing:
-            await db.execute("UPDATE ranges SET status='pending' WHERE status='computing'")
-            await db.commit()
-            log_event("Using existing database, reset computing ranges")
-            
-            c = await db.execute("SELECT COUNT(*) FROM ranges WHERE status='done'")
-            row = await c.fetchone()
-            computed_ranges = row[0] if row else 0
-            computing_ranges = 0
-            
-            c = await db.execute("SELECT found_key FROM found ORDER BY found_time DESC LIMIT 1")
-            row = await c.fetchone()
-            found_key = row[0] if row else None
-            await c.close()
-        else:
-            await init_new_database()
-
-async def init_new_database():
-    await db.execute("DELETE FROM ranges")
-    await db.execute("DELETE FROM found")
-    await db.commit()
-
-    s = input("Enter range start hex: ").strip()
-    e = input("Enter range end hex: ").strip()
-    
-    s = s[2:] if s.lower().startswith("0x") else s
-    e = e[2:] if e.lower().startswith("0x") else e
-    
-    try:
-        si = int(s, 16)
-        ei = int(e, 16)
-    except ValueError:
-        print("Invalid hex format")
-        sys.exit(1)
-        
-    if si > ei:
-        print("Swapping start/end")
-        si, ei = ei, si
-        
-    try:
-        segs = int(input("Enter segments count: ").strip())
-    except ValueError:
-        print("Invalid segments number")
-        sys.exit(1)
-        
-    if segs <= 0:
-        print("Segments count must be positive")
-        sys.exit(1)
-        
-    target = input("Enter target address: ").strip()
-    
-    total = ei - si + 1
-    if segs > total:
-        print(f"Adjusting segments count from {segs} to {total}")
-        segs = total
-        
-    base, rem = divmod(total, segs)
-    current = si
-    
-    for i in range(segs):
-        range_size = base + (1 if i < rem else 0)
-        end = current + range_size - 1
-        await db.execute(
-            "INSERT INTO ranges(start, end, address, status) VALUES(?,?,?,?)",
-            (f"{current:X}", f"{end:X}", target, "pending")
-        )
-        current = end + 1
-    
-    await db.commit()
-    log_event(f"Initialized new database: {s}-{e} ({segs} segments), target: {target}")
+        use_existing = False
+    if not use_existing:
+        await db.execute("DELETE FROM ranges")
+        await db.commit()
+        computed_ranges = 0
+        computing_ranges = 0
+        print(f"======= Creating Cyclone database =======")
+        s = input("Enter start hex: ").strip()
+        e = input("Enter end hex: ").strip()
+        if s.lower().startswith("0x"):
+            s = s[2:]
+        if e.lower().startswith("0x"):
+            e = e[2:]
+        try:
+            si = int(s, 16)
+            ei = int(e, 16)
+        except:
+            print("Invalid hex")
+            sys.exit(1)
+        if si > ei:
+            print("Swapping start/end")
+            si, ei = ei, si
+        try:
+            segs = int(input("Enter segments: ").strip())
+        except:
+            print("Bad segments")
+            sys.exit(1)
+        if segs <= 0:
+            print("Segments>0")
+            sys.exit(1)
+        t = input("Enter target address: ").strip()
+        tot = ei - si + 1
+        if segs > tot:
+            print(f"Too big {segs} > {tot}, adjusting")
+            segs = tot
+        base = tot // segs
+        rem = tot % segs
+        cur = si
+        records = []
+        for i in range(segs):
+            ss = base + (1 if i < rem else 0)
+            st = cur
+            en = cur + ss - 1
+            cur = en + 1
+            stx = format(st, "X")
+            enx = format(en, "X")
+            records.append((stx, enx, t, "pending"))
+        await db.executemany("INSERT INTO ranges(start, end, address, status) VALUES(?,?,?,?)", records)
+        await db.commit()
+        log_event(f"New DB {s}-{e} segs={segs} target={t}")
+    else:
+        await db.execute("UPDATE ranges SET status='pending' WHERE status='computing'")
+        await db.commit()
+        log_event("Existing DB reused, computing->pending")
+        c = await db.execute("SELECT COUNT(*) FROM ranges WHERE status='done'")
+        row = await c.fetchone()
+        computed_ranges = row[0] if row else 0
+        computing_ranges = 0
+        await c.close()
 
 def main():
     parser = argparse.ArgumentParser()
