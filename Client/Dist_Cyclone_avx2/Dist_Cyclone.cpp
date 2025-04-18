@@ -18,9 +18,20 @@
 #include <utility>
 #include <cstdlib>
 #include <csignal>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <windows.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+    #define close closesocket
+    #define	SIGHUP	1	/* hangup */
+#else
+    #include <arpa/inet.h>
+    #include <sys/socket.h>
+    #include <unistd.h>
+#endif
+
 #include "p2pkh_decoder.h"
 #include "sha256_avx2.h"
 #include "ripemd160_avx2.h"
@@ -341,6 +352,15 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " -i <IP> -p <port>\n";
         return 1;
     }
+
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed.\n";
+        return 1;
+    }
+#endif
+
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("socket");
@@ -592,6 +612,13 @@ int main(int argc, char* argv[]) {
     double dtFin = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - g_timeStart).count();
     double msFin = (double)g_globalComparedCount / dtFin / 1e6;
     printFullStats(numCPUs, msFin, g_globalComparedCount, dtFin, 0.0L);
+
+#ifdef _WIN32
+    WSACleanup();
+    closesocket(sock);
+    #else
     close(sock);
+#endif
+
     return 0;
 }
